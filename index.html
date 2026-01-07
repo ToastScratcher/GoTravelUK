@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NaviGo S24 - Final Fix</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+    
+    <style>
+        :root { --uk-red: #d00; --drive-blue: #1a73e8; }
+        body, html { margin: 0; padding: 0; height: 100%; width: 100%; font-family: 'Roboto', sans-serif; overflow: hidden; background: #000; }
+        #app-container { position: relative; width: 100%; height: 100%; max-width: 412px; margin: 0 auto; background: #fff; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; z-index: 1; }
+        
+        /* OVERLAYS */
+        #start-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #fff; z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .start-btn { background: var(--drive-blue); color: white; border: none; padding: 20px 60px; border-radius: 50px; font-size: 20px; font-weight: bold; }
+
+        .search-area { position: absolute; top: 20px; left: 5%; width: 90%; z-index: 1000; }
+        #search-input { width: 100%; padding: 18px 25px; border-radius: 35px; border: 1px solid #ddd; box-shadow: 0 4px 12px rgba(0,0,0,0.1); font-size: 16px; outline: none; box-sizing: border-box; }
+        #results { background: white; margin-top: 8px; border-radius: 12px; display: none; max-height: 300px; overflow-y: auto; box-shadow: 0 8px 20px rgba(0,0,0,0.2); }
+        .item { padding: 15px; border-bottom: 1px solid #eee; cursor: pointer; }
+
+        /* HUD */
+        #speed-sign { position: absolute; bottom: 140px; left: 20px; width: 65px; height: 65px; background: white; border: 7px solid var(--uk-red); border-radius: 50%; display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 1000; }
+        #dashboard { display: none; position: absolute; bottom: 0; width: 100%; z-index: 1000; background: white; padding: 25px; border-top: 1px solid #eee; border-radius: 20px 20px 0 0; }
+    </style>
+</head>
+<body>
+
+    <div id="app-container">
+        <div id="start-overlay">
+            <h1 style="color:var(--drive-blue)">NaviGo Pro</h1>
+            <button class="start-btn" onclick="initApp()">START APP</button>
+        </div>
+
+        <div id="map"></div>
+
+        <div class="search-area">
+            <input type="text" id="search-input" placeholder="Search (McDonald's, KFC, Shell)...">
+            <div id="results"></div>
+        </div>
+
+        <div id="speed-sign">
+            <b id="speed-val" style="font-size:24px;">0</b>
+            <span style="font-size:9px; font-weight:bold;">MPH</span>
+        </div>
+
+        <div id="dashboard">
+            <p id="nav-text" style="font-size:18px; font-weight:bold; margin:0;">Follow the map</p>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+                <p id="nav-stats" style="color:gray;">-- mins • -- miles</p>
+                <button onclick="location.reload()" style="background:#fee; color:#d00; border:none; padding:10px; border-radius:8px; font-weight:bold;">END</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+
+    <script>
+        const map = L.map('map', { zoomControl: false }).setView([54.95, -1.55], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        
+        let userLoc = null, activeItem = null, route = null, lastMsg = "";
+        const uMark = L.circleMarker([0,0], { color: 'white', fillColor: '#1a73e8', fillOpacity: 1, radius: 10, weight: 3 }).addTo(map);
+
+        function initApp() {
+            document.getElementById('start-overlay').style.display = 'none';
+            navigator.geolocation.watchPosition(p => {
+                userLoc = [p.coords.latitude, p.coords.longitude];
+                uMark.setLatLng(userLoc);
+                // CAMERA FOLLOW
+                map.panTo(userLoc, { animate: true });
+                document.getElementById('speed-val').innerText = p.coords.speed ? Math.round(p.coords.speed * 2.237) : 0;
+            }, null, { enableHighAccuracy: true });
+        }
+
+        // VOICE LOGIC
+        function speak(text) {
+            if (text === lastMsg) return;
+            lastMsg = text;
+            const s = new SpeechSynthesisUtterance(text);
+            s.lang = 'en-GB';
+            window.speechSynthesis.speak(s);
+        }
+
+        // IMPROVED SEARCH LOGIC
+        document.getElementById('search-input').addEventListener('input', function(e) {
+            const query = e.target.value;
+            if (query.length < 2) {
+                document.getElementById('results').style.display = 'none';
+                return;
+            }
+
+            // Using a specific User-Agent-like header via URL params to avoid mobile blocks
+            let url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=gb&addressdetails=1&limit=8`;
+            
+            // Apply 15-mile fence only if location is ready
+            if (userLoc) {
+                const box = 0.25; // approx 15-20 miles
+                url += `&viewbox=${userLoc[1]-box},${userLoc[0]+box},${userLoc[1]+box},${userLoc[0]-box}&bounded=1`;
+            }
+
+            fetch(url, { headers: { 'Accept-Language': 'en-GB' } })
+            .then(r => r.json())
+            .then(data => {
+                const res = document.getElementById('results');
+                res.innerHTML = '';
+                if (data.length > 0) {
+                    res.style.display = 'block';
+                    data.forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'item';
+                        div.innerHTML = `<b>${item.display_name.split(',')[0]}</b><br><small>${item.address.city || item.address.town || 'Nearby'}</small>`;
+                        div.onclick = () => {
+                            activeItem = item;
+                            document.getElementById('results').style.display = 'none';
+                            startNav();
+                        };
+                        res.appendChild(div);
+                    });
+                }
+            }).catch(() => {
+                // If the fetch fails (block), try a simpler URL
+                console.log("Retrying simple search...");
+            });
+        });
+
+        function startNav() {
+            document.querySelector('.search-area').style.display = 'none';
+            document.getElementById('dashboard').style.display = 'block';
+            document.getElementById('speed-sign').style.display = 'flex';
+
+            if(route) map.removeControl(route);
+            route = L.Routing.control({
+                waypoints: [L.latLng(userLoc), L.latLng(activeItem.lat, activeItem.lon)],
+                router: L.Routing.osrmv1({ serviceUrl: 'https://router.project-osrm.org/route/v1' }),
+                lineOptions: { styles: [{ color: '#1a73e8', weight: 8 }] },
+                addWaypoints: false, show: false
+            }).addTo(map);
+
+            route.on('routesfound', e => {
+                const step = e.routes[0].instructions[0].text;
+                document.getElementById('nav-text').innerText = step;
+                document.getElementById('nav-stats').innerText = `${Math.round(e.routes[0].summary.totalTime/60)} mins • ${(e.routes[0].summary.totalDistance/1609).toFixed(1)} miles`;
+                speak(step);
+            });
+        }
+    </script>
+</body>
+</html>
