@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NaviGo - S24 Edition</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+    
+    <style>
+        /* S24 SPECIFIC UI PROPORTIONS (360x780 Viewport) */
+        :root { 
+            --uk-red: #d00; 
+            --drive-blue: #1a73e8; 
+            --s24-ratio: 19.5 / 9;
+        }
+        
+        body, html { 
+            margin: 0; padding: 0; height: 100%; width: 100%; 
+            font-family: 'Roboto', sans-serif; overflow: hidden; background: #000;
+        }
+
+        #app-wrapper {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            max-width: 412px; /* Standard S24 width */
+            margin: 0 auto;
+            background: #fff;
+        }
+
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; z-index: 1; }
+
+        /* OVERLAYS */
+        #start-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #fff; z-index: 9999; display: flex; 
+            flex-direction: column; align-items: center; justify-content: center;
+        }
+        .btn-start { 
+            background: var(--drive-blue); color: white; border: none; 
+            padding: 22px 60px; border-radius: 50px; font-size: 22px; font-weight: bold; 
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1); cursor: pointer;
+        }
+
+        .search-container { position: absolute; top: 20px; left: 5%; width: 90%; z-index: 1000; }
+        #search-box { 
+            width: 100%; padding: 18px 25px; border-radius: 35px; border: 1px solid #ddd; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1); font-size: 16px; outline: none; box-sizing: border-box;
+        }
+        #results { 
+            background: white; margin-top: 10px; border-radius: 15px; display: none; 
+            max-height: 400px; overflow-y: auto; box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+        }
+        .item { padding: 18px; border-bottom: 1px solid #eee; cursor: pointer; }
+
+        /* HUD & DASHBOARD */
+        #speedo { 
+            position: absolute; bottom: 140px; left: 20px; width: 75px; height: 75px; 
+            background: white; border: 8px solid var(--uk-red); border-radius: 50%; 
+            display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 1000; 
+        }
+        #dashboard { 
+            display: none; position: absolute; bottom: 0; width: 100%; z-index: 1000; 
+            background: white; padding: 25px; border-top: 1px solid #eee; border-radius: 25px 25px 0 0;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app-wrapper">
+        <div id="start-overlay">
+            <h1 style="color:var(--drive-blue); font-size: 35px; margin-bottom: 5px;">NaviGo</h1>
+            <p style="color:gray; margin-bottom: 30px;">Samsung S24 Optimized</p>
+            <button class="btn-start" onclick="beginApp()">START DRIVING</button>
+        </div>
+
+        <div id="map"></div>
+
+        <div class="search-container">
+            <input type="text" id="search-box" placeholder="Where to? (e.g. KFC, Asda)">
+            <div id="results"></div>
+        </div>
+
+        <div id="speedo">
+            <b id="mph" style="font-size:26px;">0</b>
+            <span style="font-size:10px; font-weight:bold;">MPH</span>
+        </div>
+
+        <div id="dashboard">
+            <p id="instruction-text" style="font-size:20px; font-weight:bold; margin:0; color:#202124;">Finding best route...</p>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:15px;">
+                <p id="eta" style="color:gray; font-size:15px; margin:0;">-- mins • -- miles</p>
+                <button onclick="location.reload()" style="background:#fee; color:#d00; border:none; padding:10px 20px; border-radius:12px; font-weight:bold;">END</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+
+    <script>
+        const map = L.map('map', { zoomControl: false, zoomSnap: 0.1 }).setView([54.95, -1.55], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        
+        let userPos = null, destination = null, routeControl = null, lastSpeech = "";
+        const uMark = L.circleMarker([0,0], { color: 'white', fillColor: '#1a73e8', fillOpacity: 1, radius: 11, weight: 4 }).addTo(map);
+
+        function beginApp() {
+            document.getElementById('start-overlay').style.display = 'none';
+            navigator.geolocation.watchPosition(p => {
+                userPos = [p.coords.latitude, p.coords.longitude];
+                uMark.setLatLng(userPos);
+                
+                // 1. CAMERA FOLLOW LOGIC
+                // If we are navigating, keep the camera centered on the blue circle
+                if (routeControl) {
+                    map.panTo(userPos, { animate: true, duration: 1.5 });
+                } else {
+                    map.setView(userPos, 16);
+                }
+
+                document.getElementById('mph').innerText = p.coords.speed ? Math.round(p.coords.speed * 2.237) : 0;
+            }, (e) => console.log(e), { enableHighAccuracy: true });
+        }
+
+        // 2. TTS VOICE LOGIC
+        function speak(text) {
+            if (text === lastSpeech) return; // Prevent repeating the same direction
+            lastSpeech = text;
+            const msg = new SpeechSynthesisUtterance(text);
+            msg.lang = 'en-GB';
+            window.speechSynthesis.speak(msg);
+        }
+
+        document.getElementById('search-box').addEventListener('input', function(e) {
+            const q = e.target.value;
+            if (q.length < 2 || !userPos) return;
+            
+            const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&viewbox=${userPos[1]-0.15},${userPos[0]+0.15},${userPos[1]+0.15},${userPos[0]-0.15}&bounded=1&countrycodes=gb`;
+            
+            fetch(url).then(r => r.json()).then(data => {
+                const resDiv = document.getElementById('results');
+                resDiv.innerHTML = ''; resDiv.style.display = 'block';
+                data.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'item';
+                    div.innerHTML = `<b>${item.display_name.split(',')[0]}</b><br><small>UK</small>`;
+                    div.onclick = () => {
+                        destination = item;
+                        document.getElementById('results').style.display = 'none';
+                        startNav();
+                    };
+                    resDiv.appendChild(div);
+                });
+            });
+        });
+
+        function startNav() {
+            document.querySelector('.search-container').style.display = 'none';
+            document.getElementById('dashboard').style.display = 'block';
+            document.getElementById('speedo').style.display = 'flex';
+
+            if(routeControl) map.removeControl(routeControl);
+            
+            routeControl = L.Routing.control({
+                waypoints: [L.latLng(userPos), L.latLng(destination.lat, destination.lon)],
+                router: L.Routing.osrmv1({ serviceUrl: 'https://router.project-osrm.org/route/v1' }),
+                lineOptions: { styles: [{ color: '#1a73e8', weight: 10 }] },
+                addWaypoints: false,
+                show: false
+            }).addTo(map);
+
+            routeControl.on('routesfound', function(e) {
+                const r = e.routes[0];
+                const instruction = r.instructions[0].text;
+                
+                // Update UI
+                document.getElementById('instruction-text').innerText = instruction;
+                document.getElementById('eta').innerText = `${Math.round(r.summary.totalTime/60)} min • ${(r.summary.totalDistance/1609).toFixed(1)} miles`;
+                
+                // 3. AUTO-TTS: Say the next step out loud
+                speak(instruction);
+            });
+        }
+    </script>
+</body>
+</html>
